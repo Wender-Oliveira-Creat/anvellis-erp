@@ -1,3 +1,10 @@
 *.db
 __pycache__/
 segredo.key
+
+# Banco de dados local
+*.db
+
+# Arquivos temporários do Python
+__pycache__/
+*.pyc
