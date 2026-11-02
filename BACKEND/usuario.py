@@ -138,3 +138,4 @@ def excluirUsuario(email):
             return "Usuario não encontrado"
 
     return "Usuario excluido com sucesso"
+   

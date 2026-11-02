@@ -488,6 +488,213 @@ def cancelar_venda(id):
     }), 200
 
 
+@app.route("/api/estoque/ajustar", methods=["POST"])
+def ajustar_estoque():
+    if "usuario_id" not in session:
+        return jsonify({"mensagem": "Não autenticado"}), 401
+
+    dados = request.get_json(silent=True)
+
+    if not isinstance(dados, dict):
+        return jsonify({"mensagem": "Dados inválidos"}), 400
+
+    produto_id = dados.get("produto_id")
+    quantidade = dados.get("quantidade")
+    tipo = dados.get("tipo","ajuste")
+    motivo = dados.get("motivo", "")
+
+    if type(produto_id) is not int or produto_id <= 0:
+        return jsonify({"mensagem": "Produto inválido"}), 400
+
+    if type(quantidade) is not int or quantidade < 0:
+        return jsonify({"mensagem": "Quantidade inválida"}), 400
+
+    if tipo not in ("entrada", "saida", "ajuste"):
+        return jsonify({"mensagem": "Tipo de ajuste inválido"}), 400
+
+    if not isinstance(motivo, str):
+        return jsonify({"mensagem": "Motivo inválido"}), 400
+
+    with conexaoBanco() as conexao:
+        produto = conexao.execute(
+            "SELECT id, nome, quantidade FROM produtos WHERE id = ?",
+            (produto_id,)
+        ).fetchone()
+
+        if produto is None:
+            return jsonify({"mensagem": "Produto não encontrado"}), 404
+
+        anterior = produto["quantidade"]
+
+        if tipo == "entrada":
+            nova = anterior + quantidade
+        elif tipo == "saida":
+            nova = anterior - quantidade
+        else:
+            nova = quantidade
+
+        if nova < 0:
+            return jsonify({"mensagem": "Estoque insuficiente"}), 400
+
+        conexao.execute(
+            "UPDATE produtos SET quantidade = ? WHERE id = ?",
+            (nova, produto_id)
+        )
+
+        conexao.execute("""
+            INSERT INTO movimentos_estoque (
+                produto_id,
+                produto,
+                quantidade_anterior,
+                quantidade_nova,
+                motivo,
+                criado_em
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            produto_id,
+            produto["nome"],
+            anterior,
+            nova,
+            motivo.strip() or tipo,
+            agoraUTC()
+        ))
+
+        if nova < anterior:
+            avisarEstoqueBaixo(conexao, produto["nome"], nova)
+
+    return jsonify({
+        "mensagem": "Estoque atualizado com sucesso",
+        "quantidade_anterior": anterior,
+        "quantidade_nova": nova
+    }), 200
+
+
+@app.route("/api/notificacoes", methods=["GET"])
+def listar_notificacoes():
+    if "usuario_id" not in session:
+        return jsonify({"mensagem": "Não autenticado"}), 401
+
+    with conexaoBanco() as conexao:
+        notificacoes = conexao.execute("""
+            SELECT
+                id,
+                titulo,
+                texto,
+                lida,
+                criada_em
+            FROM notificacoes
+            ORDER BY criada_em DESC, id DESC
+            LIMIT 50
+        """).fetchall()
+
+    resultado = []
+
+    for notificacao in notificacoes:
+        resultado.append({
+            "id": notificacao["id"],
+            "titulo": notificacao["titulo"],
+            "texto": notificacao["texto"],
+            "lida": bool(notificacao["lida"]),
+            "criada_em": notificacao["criada_em"]
+        })
+
+    return jsonify(resultado)
+
+
+@app.route("/api/notificacoes/marcar-lidas", methods=["POST"])
+def marcar_notificacoes_lidas():
+    if "usuario_id" not in session:
+        return jsonify({"mensagem": "Não autenticado"}), 401
+
+    with conexaoBanco() as conexao:
+        cursor = conexao.execute("""
+            UPDATE notificacoes
+            SET lida = 1
+            WHERE lida = 0
+        """)
+
+        quantidade = cursor.rowcount
+
+    return jsonify({
+        "mensagem": "Notificações marcadas como lidas",
+        "quantidade": quantidade
+    }), 200
+
+
+# ==========================================
+# CONFIGURAÇÕES - ANVELLIS
+# ==========================================
+
+@app.route("/api/configuracoes", methods=["GET"])
+def obter_configuracoes():
+    if "usuario_id" not in session:
+        return jsonify({"mensagem": "Não autenticado"}), 401
+
+    with conexaoBanco() as conexao:
+        config = conexao.execute("""
+            SELECT nome_loja, email, avisos_email, alerta_estoque
+            FROM configuracoes
+            WHERE id = 1
+        """).fetchone()
+
+    if config is None:
+        return jsonify({"mensagem": "Configurações não encontradas"}), 404
+
+    return jsonify({
+        "nome_loja": config["nome_loja"],
+        "email": config["email"],
+        "avisos_email": bool(config["avisos_email"]),
+        "alerta_estoque": bool(config["alerta_estoque"])
+    })
+
+
+@app.route("/api/configuracoes", methods=["PUT"])
+def salvar_configuracoes():
+    if "usuario_id" not in session:
+        return jsonify({"mensagem": "Não autenticado"}), 401
+
+    dados = request.get_json(silent=True)
+
+    if not isinstance(dados, dict):
+        return jsonify({"mensagem": "Dados inválidos"}), 400
+
+    nome_loja = dados.get("nome_loja")
+    email = dados.get("email")
+    avisos_email = dados.get("avisos_email")
+    alerta_estoque = dados.get("alerta_estoque")
+
+    if not isinstance(nome_loja, str) or not nome_loja.strip():
+        return jsonify({"mensagem": "Informe o nome da loja"}), 400
+
+    if not isinstance(email, str) or "@" not in email:
+        return jsonify({"mensagem": "E-mail inválido"}), 400
+
+    if not isinstance(avisos_email, bool):
+        return jsonify({"mensagem": "Opção de avisos inválida"}), 400
+
+    if not isinstance(alerta_estoque, bool):
+        return jsonify({"mensagem": "Opção de estoque inválida"}), 400
+
+    with conexaoBanco() as conexao:
+        conexao.execute("""
+            UPDATE configuracoes
+            SET nome_loja = ?,
+                email = ?,
+                avisos_email = ?,
+                alerta_estoque = ?
+            WHERE id = 1
+        """, (
+            nome_loja.strip(),
+            email.strip(),
+            int(avisos_email),
+            int(alerta_estoque)
+        ))
+
+    return jsonify({
+        "mensagem": "Configurações salvas com sucesso"
+    }), 200
+
 
 if __name__ == "__main__":
     app.run(debug=True)
