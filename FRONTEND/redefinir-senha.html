@@ -1,0 +1,206 @@
+
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Redefinir senha — Anvellis</title>
+
+  <link rel="stylesheet" href="CSS/style.css">
+
+  <style>
+    .recuperacao__mensagem {
+      padding: 12px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      background: var(--perigo-bg);
+      color: var(--perigo);
+    }
+
+    .recuperacao__mensagem--sucesso {
+      background: var(--sucesso-bg);
+      color: var(--sucesso);
+    }
+
+    .recuperacao__voltar {
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="login">
+
+    <section class="login__marca">
+      <img
+        class="login__imagem"
+        src="Img/logo_vermelha.jpeg"
+        alt="Anvellis"
+      >
+    </section>
+
+    <main class="login__painel">
+
+      <form class="login__form" id="form-redefinir">
+
+        <h1 class="titulo-pagina">Redefinir senha</h1>
+
+        <p class="login__sub">
+          Crie uma nova senha para acessar sua conta na Anvellis.
+        </p>
+
+        <div class="campo">
+          <label class="campo__rotulo" for="nova-senha">
+            Nova senha
+          </label>
+
+          <input
+            class="campo__entrada"
+            id="nova-senha"
+            type="password"
+            placeholder="Digite sua nova senha"
+            autocomplete="new-password"
+            minlength="6"
+            required
+          >
+
+          <p class="campo__ajuda">
+            Sua senha deve ter pelo menos 6 caracteres.
+          </p>
+        </div>
+
+        <div class="campo">
+          <label class="campo__rotulo" for="confirmar-senha">
+            Confirmar nova senha
+          </label>
+
+          <input
+            class="campo__entrada"
+            id="confirmar-senha"
+            type="password"
+            placeholder="Confirme sua nova senha"
+            autocomplete="new-password"
+            required
+          >
+        </div>
+
+        <p
+          id="mensagem"
+          class="recuperacao__mensagem"
+          role="status"
+          hidden
+        ></p>
+
+        <button
+          class="btn btn--primary btn--bloco"
+          id="botao-redefinir"
+          type="submit"
+        >
+          Redefinir senha
+        </button>
+
+        <p class="recuperacao__voltar">
+          <a href="index.html">Voltar para o login</a>
+        </p>
+
+      </form>
+
+    </main>
+
+  </div>
+
+  <script>
+    const formulario = document.getElementById("form-redefinir");
+    const mensagem = document.getElementById("mensagem");
+    const botao = document.getElementById("botao-redefinir");
+
+    const token = new URLSearchParams(
+      window.location.search
+    ).get("token");
+
+    function mostrarMensagem(texto, sucesso = false) {
+      mensagem.textContent = texto;
+      mensagem.hidden = false;
+
+      mensagem.classList.toggle(
+        "recuperacao__mensagem--sucesso",
+        sucesso
+      );
+    }
+
+    if (!token) {
+      mostrarMensagem("Link de recuperação inválido.");
+      botao.disabled = true;
+    }
+
+    formulario.addEventListener("submit", async (evento) => {
+      evento.preventDefault();
+
+      const senha = document.getElementById("nova-senha").value;
+      const confirmar = document.getElementById("confirmar-senha").value;
+
+      if (senha.length < 6) {
+        mostrarMensagem("A senha deve ter pelo menos 6 caracteres.");
+        return;
+      }
+
+      if (senha !== confirmar) {
+        mostrarMensagem("As senhas não coincidem.");
+        return;
+      }
+
+      botao.disabled = true;
+      botao.textContent = "Redefinindo...";
+      mensagem.hidden = true;
+
+      try {
+        const resposta = await fetch(
+          "http://127.0.0.1:5000/api/redefinir-senha",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              token: token,
+              senha: senha
+            })
+          }
+        );
+
+        const dados = await resposta.json();
+
+        if (!resposta.ok) {
+          mostrarMensagem(
+            dados.erro ||
+            dados.mensagem ||
+            "Não foi possível redefinir a senha."
+          );
+          return;
+        }
+
+        mostrarMensagem(
+          "Senha redefinida com sucesso! Você já pode entrar na sua conta.",
+          true
+        );
+
+        formulario.reset();
+        document.getElementById("nova-senha").disabled = true;
+        document.getElementById("confirmar-senha").disabled = true;
+
+      } catch (erro) {
+        mostrarMensagem("Não foi possível conectar ao servidor.");
+      } finally {
+        if (!mensagem.classList.contains(
+          "recuperacao__mensagem--sucesso"
+        )) {
+          botao.disabled = false;
+          botao.textContent = "Redefinir senha";
+        }
+      }
+    });
+  </script>
+</body>
+</html>

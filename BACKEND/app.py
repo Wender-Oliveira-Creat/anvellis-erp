@@ -1,11 +1,29 @@
 from flask_cors import CORS
-from flask import Flask,  jsonify, request, session
+from flask import Flask, jsonify, request, session
 
 import os
+import smtplib
+import hashlib
+
+from email.message import EmailMessage
+
+from itsdangerous import (
+    URLSafeTimedSerializer,
+    BadSignature,
+    SignatureExpired
+)
+
+from werkzeug.security import generate_password_hash
+
 from usuario import cadastroUsuario, loginUsuario
 from banco import criarBanco, conexaoBanco
+from produto import (
+    listarProdutos,
+    cadastrarProduto,
+    alterarProduto,
+    excluirProduto
+)
 
-from produto import listarProdutos, cadastrarProduto, alterarProduto, excluirProduto
 
 app = Flask(__name__)
 
@@ -694,6 +712,177 @@ def salvar_configuracoes():
     return jsonify({
         "mensagem": "Configurações salvas com sucesso"
     }), 200
+
+
+# ==========================================
+# RECUPERAÇÃO DE SENHA - ANVELLIS
+# ==========================================
+
+# Configuração dos tokens
+assinador = URLSafeTimedSerializer(app.secret_key)
+
+
+def assinaturaSenha(senha_hash):
+    return hashlib.sha256(
+        senha_hash.encode("utf-8")
+    ).hexdigest()
+
+
+# Enviar e-mail de recuperação
+def enviarEmailRecuperacao(destinatario, link):
+    remetente = os.environ["SMTP_EMAIL"]
+    senha_app = os.environ["SMTP_PASSWORD"]
+
+    mensagem = EmailMessage()
+    mensagem["Subject"] = "Anvellis - Recuperação de senha"
+    mensagem["From"] = remetente
+    mensagem["To"] = destinatario
+
+    mensagem.set_content(
+        "Olá!\n\n"
+        "Recebemos uma solicitação de recuperação de senha.\n\n"
+        "Acesse o link abaixo para criar uma nova senha:\n"
+        f"{link}\n\n"
+        "O link expira em 15 minutos.\n\n"
+        "Se você não solicitou isso, ignore este e-mail."
+    )
+
+    with smtplib.SMTP_SSL(
+        "smtp.gmail.com", 465, timeout=15
+    ) as servidor:
+        servidor.login(remetente, senha_app)
+        servidor.send_message(mensagem)
+
+
+# ==========================================
+# SOLICITAR RECUPERAÇÃO DE SENHA
+# ==========================================
+
+@app.route("/api/recuperar-senha", methods=["POST"])
+def recuperar_senha():
+    dados = request.get_json(silent=True) or {}
+
+    if not isinstance(dados, dict):
+        return jsonify({"mensagem": "Dados inválidos"}), 400
+
+    email = dados.get("email")
+
+    if not isinstance(email, str) or "@" not in email:
+        return jsonify({"mensagem": "E-mail inválido"}), 400
+
+    email = email.strip().lower()
+
+    with conexaoBanco() as conexao:
+        usuario = conexao.execute(
+            "SELECT id, senha FROM usuarios WHERE email = ?",
+            (email,)
+        ).fetchone()
+
+    resposta = {
+        "mensagem": (
+            "Se o e-mail estiver cadastrado, "
+            "você receberá um link de recuperação."
+        )
+    }
+
+    if usuario is None:
+        return jsonify(resposta), 200
+
+    token = assinador.dumps(
+        {
+            "id": usuario["id"],
+            "senha": assinaturaSenha(usuario["senha"])
+        },
+        salt="recuperacao-senha"
+    )
+
+    link = (
+        "http://127.0.0.1:5500/FRONTEND/redefinir-senha.html"
+        f"?token={token}"
+    )
+
+    try:
+        enviarEmailRecuperacao(email, link)
+
+    except (OSError, smtplib.SMTPException, KeyError):
+        app.logger.exception("Falha ao enviar e-mail")
+
+        return jsonify({
+            "mensagem": "Não foi possível enviar o e-mail agora."
+        }), 503
+
+    return jsonify(resposta), 200
+
+
+# ==========================================
+# REDEFINIR SENHA
+# ==========================================
+
+@app.route("/api/redefinir-senha", methods=["POST"])
+def redefinir_senha():
+    dados = request.get_json(silent=True) or {}
+
+    if not isinstance(dados, dict):
+        return jsonify({"mensagem": "Dados inválidos"}), 400
+
+    token = dados.get("token")
+    nova_senha = dados.get("senha")
+
+    if not isinstance(token, str) or not token:
+        return jsonify({"mensagem": "Link inválido"}), 400
+
+    if not isinstance(nova_senha, str) or len(nova_senha) < 6:
+        return jsonify({
+            "mensagem": "A senha deve ter pelo menos 6 caracteres"
+        }), 400
+
+    try:
+        payload = assinador.loads(
+            token,
+            salt="recuperacao-senha",
+            max_age=900
+        )
+
+    except (BadSignature, SignatureExpired):
+        return jsonify({
+            "mensagem": "Link inválido ou expirado"
+        }), 400
+
+    if not isinstance(payload, dict):
+        return jsonify({"mensagem": "Link inválido"}), 400
+
+    usuario_id = payload.get("id")
+    assinatura = payload.get("senha")
+
+    if type(usuario_id) is not int or not isinstance(assinatura, str):
+        return jsonify({"mensagem": "Link inválido"}), 400
+
+    with conexaoBanco() as conexao:
+        usuario = conexao.execute(
+            "SELECT senha FROM usuarios WHERE id = ?",
+            (usuario_id,)
+        ).fetchone()
+
+        if (
+            usuario is None
+            or assinaturaSenha(usuario["senha"]) != assinatura
+        ):
+            return jsonify({
+                "mensagem": "Este link não é mais válido"
+            }), 400
+
+        conexao.execute(
+            "UPDATE usuarios SET senha = ? WHERE id = ?",
+            (
+                generate_password_hash(nova_senha),
+                usuario_id
+            )
+        )
+
+    return jsonify({
+        "mensagem": "Senha alterada com sucesso"
+    }), 200
+
 
 
 if __name__ == "__main__":
